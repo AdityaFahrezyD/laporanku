@@ -15,6 +15,7 @@ return new class extends Migration
             $table->uuid('income_id')->primary();
             $table->uuid('wallet_id');
             $table->decimal('amount', 15, 2);
+            $table->foreignUuid('category_id')->nullable()->constrained('categories', 'category_id')->restrictOnDelete();
             $table->text('description')->nullable();
             $table->dateTime('transaction_date');
             $table->timestamps();

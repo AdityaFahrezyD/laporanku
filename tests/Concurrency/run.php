@@ -1,7 +1,9 @@
 <?php
 
+use App\Models\Category;
 use App\Models\Income;
 use App\Models\Wallet;
+use App\Services\CategoryService;
 use App\Services\ExpenseService;
 use App\Services\IncomeService;
 use Illuminate\Contracts\Console\Kernel;
@@ -99,14 +101,32 @@ try {
     verify(DB::connection()->getName() === 'finance_test' && DB::connection()->getDatabaseName() === $database, 'Migration connection is not isolated.');
     verify(Artisan::call('migrate', ['--database' => 'finance_test', '--force' => true]) === 0, 'Migration failed.');
 
-    // Verify upgrade of an existing income without a category.
+    // The initial migrations must include the master and nullable category foreign keys.
+    verify(DB::connection('finance_test')->getSchemaBuilder()->hasTable('categories'), 'Category master is missing.');
+    verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('expenses', 'category_id'), 'Expense category is missing.');
+    verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('incomes', 'category_id'), 'Initial migration is missing category.');
     $wallet = Wallet::create(['name' => 'Integration', 'type' => 'bank', 'balance' => '100.00', 'is_active' => true]);
-    $category = require database_path('migrations/2026_09_08_000000_add_category_to_incomes_table.php');
-    $category->down();
     $legacy = Income::create(['wallet_id' => $wallet->getKey(), 'amount' => '1.00', 'transaction_date' => '2026-09-08 10:30:00']);
-    $category->up();
-    verify($legacy->fresh()->category === null, 'Legacy category was not preserved.');
+    verify($legacy->fresh()->category === null, 'Category must allow null.');
     $legacy->delete();
+
+    $category = app(CategoryService::class)->createCategory(['name' => 'Gaji', 'type' => 'income']);
+    $categorized = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '1.00', 'category_id' => $category->getKey(), 'transaction_date' => '08-09-2026 10:30']);
+    verify($categorized->category->getKey() === $category->getKey(), 'Category relation mismatch.');
+    foreach (['delete', 'change_type'] as $operation) {
+        try {
+            if ($operation === 'delete') {
+                app(CategoryService::class)->deleteCategory($category->getKey());
+            } else {
+                app(CategoryService::class)->updateCategory($category->getKey(), ['type' => 'expense']);
+            }
+            throw new RuntimeException('Used category was modified.');
+        } catch (ValidationException) {
+            verify(Category::find($category->getKey())->type === 'income', 'Used category changed.');
+        }
+    }
+    app(IncomeService::class)->deleteIncome($categorized->getKey());
+    app(CategoryService::class)->deleteCategory($category->getKey());
 
     for ($iteration = 0; $iteration < 5; $iteration++) {
         $wallet->update(['balance' => '100.00']);
@@ -116,17 +136,17 @@ try {
         verify($wallet->fresh()->balance === '20.00', 'Concurrent expense balance mismatch.');
 
         $wallet->update(['balance' => '1000.00']);
-        $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '100.00', 'category' => 'Test', 'transaction_date' => '08-09-2026 10:30']);
+        $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '100.00', 'transaction_date' => '08-09-2026 10:30']);
         $results = race($database, [['update', $income->getKey()], ['delete', $income->getKey()]]);
         verify($results[1] === '200' && in_array($results[0], ['200', '404'], true), 'Concurrent edit/delete failed.');
         verify($wallet->fresh()->balance === '1000.00' && Income::find($income->getKey()) === null, 'Income reversed more than once.');
     }
 
     $wallet->update(['balance' => '0.00']);
-    $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '9999999999999.99', 'category' => 'Maximum', 'transaction_date' => '08-09-2026 10:30']);
+    $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '9999999999999.99', 'transaction_date' => '08-09-2026 10:30']);
     verify($wallet->fresh()->balance === '9999999999999.99', 'Maximum DECIMAL precision lost.');
     try {
-        app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '0.01', 'category' => 'Overflow', 'transaction_date' => '08-09-2026 10:30']);
+        app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '0.01', 'transaction_date' => '08-09-2026 10:30']);
         throw new RuntimeException('Overflow was allowed.');
     } catch (ValidationException) {
         verify($wallet->fresh()->balance === '9999999999999.99', 'Overflow changed balance.');
@@ -135,7 +155,9 @@ try {
     verify($wallet->fresh()->balance === '0.00', 'Maximum reversal mismatch.');
     verify(Artisan::call('migrate:reset', ['--database' => 'finance_test', '--force' => true]) === 0, 'Migration rollback failed.');
     verify(Artisan::call('migrate', ['--database' => 'finance_test', '--force' => true]) === 0, 'Migration reapply failed.');
-    echo "PASS: 5 overspending races, 5 edit/delete races, DECIMAL boundary, legacy upgrade, full rollback/reapply.\n";
+    verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('incomes', 'category_id'), 'Reapplied migration is missing category.');
+    verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('expenses', 'category_id'), 'Reapplied expense category is missing.');
+    echo "PASS: 5 overspending races, 5 edit/delete races, DECIMAL boundary, category master, full rollback/reapply.\n";
 } finally {
     DB::disconnect('finance_test');
     if ($created) {

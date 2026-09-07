@@ -18,7 +18,12 @@ class Expense extends Model
 
     public $incrementing = false;
 
-    protected $fillable = ['wallet_id', 'amount', 'description', 'transaction_date'];
+    protected $fillable = ['wallet_id', 'amount', 'category_id', 'description', 'transaction_date'];
+
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(Category::class, 'category_id', 'category_id');
+    }
 
     protected function casts(): array
     {

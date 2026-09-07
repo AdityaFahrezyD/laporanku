@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Category;
 use App\Models\Wallet;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
@@ -36,6 +37,13 @@ abstract class TransactionService
             $record = $id === null ? new $this->model : $this->model::lockForUpdate()->findOrFail($id);
             $old = $record->exists ? $this->effects($record->getAttributes()) : [];
             $merged = array_replace($record->getAttributes(), $data);
+            if ($this->kind !== 'transfer' && ($merged['category_id'] ?? null) !== null) {
+                // Serialize category assignment with category type changes/deletion.
+                $category = Category::lockForUpdate()->find($merged['category_id']);
+                if (! $category || $category->type !== $this->kind) {
+                    throw ValidationException::withMessages(['category_id' => 'Kategori harus tersedia dan sesuai jenis transaksi.']);
+                }
+            }
             $new = $this->effects($merged);
             $this->applyBalances($old, $new);
 

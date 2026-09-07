@@ -5,6 +5,9 @@ use App\Models\Income;
 use App\Models\Transfer;
 use App\Models\User;
 use App\Models\Wallet;
+use App\Services\ExpenseService;
+use App\Services\IncomeService;
+use App\Services\TransferService;
 use App\Support\Money;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -19,7 +22,7 @@ function financePayload(string $kind, Wallet $wallet, ?Wallet $to = null): array
     return [
         ...($kind === 'transfers' ? ['from_wallet_id' => $wallet->getKey(), 'to_wallet_id' => $to->getKey()] : ['wallet_id' => $wallet->getKey()]),
         'amount' => '20.25', 'transaction_date' => '08-09-2026 10:30',
-        ...($kind === 'incomes' ? ['category' => 'Gaji'] : []),
+
     ];
 }
 
@@ -27,9 +30,9 @@ beforeEach(function () {
     $this->admin = User::factory()->create(['role' => 'admin']);
 });
 
-test('all resource actions require an admin', function (string $resource) {
+test('resource writes require an admin', function (string $resource) {
     $id = (string) Str::uuid();
-    $actions = [['GET', "/api/$resource"], ['POST', "/api/$resource"], ['GET', "/api/$resource/$id"], ['PUT', "/api/$resource/$id"], ['PATCH', "/api/$resource/$id"], ['DELETE', "/api/$resource/$id"]];
+    $actions = [['POST', "/api/$resource"], ['PUT', "/api/$resource/$id"], ['PATCH', "/api/$resource/$id"], ['DELETE', "/api/$resource/$id"]];
     foreach ($actions as [$method, $url]) {
         $this->json($method, $url)->assertUnauthorized();
     }
@@ -40,6 +43,44 @@ test('all resource actions require an admin', function (string $resource) {
     $this->actingAs($this->admin)->getJson("/api/$resource")->assertOk();
     $this->getJson("/api/$resource/$id")->assertNotFound();
 })->with(['wallets', 'incomes', 'expenses', 'transfers']);
+
+test('guests and all roles can read resource lists and details', function (string $resource, string $role) {
+    $wallet = financeWallet();
+    $to = financeWallet('0.00');
+    $record = match ($resource) {
+        'wallets' => $wallet,
+        'incomes' => app(IncomeService::class)->createIncome(financePayload($resource, $wallet)),
+        'expenses' => app(ExpenseService::class)->createExpense(financePayload($resource, $wallet)),
+        'transfers' => app(TransferService::class)->createTransfer(financePayload($resource, $wallet, $to)),
+    };
+    if ($role !== 'guest') {
+        $this->actingAs(User::factory()->create(['role' => $role]));
+    }
+    $url = "/api/$resource/".$record->getKey();
+    $this->getJson("/api/$resource")->assertOk()->assertJsonStructure(['message', 'data']);
+    $response = $this->getJson($url)->assertOk()->assertJsonPath('data.'.$record->getKeyName(), $record->getKey());
+    if ($resource === 'wallets') {
+        $response->assertJsonPath('data.balance', '100.00');
+    } else {
+        $response->assertJsonPath('data.amount', '20.25');
+        $relation = match ($resource) {
+            'incomes' => 'income_wallet', 'expenses' => 'expense_wallet', 'transfers' => 'transfer_from',
+        };
+        $response->assertJsonPath("data.$relation.wallet_id", $wallet->getKey());
+    }
+    foreach (["/api/$resource", $url] as $path) {
+        $this->json('HEAD', $path)->assertOk();
+    }
+    $missing = "/api/$resource/".Str::uuid();
+    $this->getJson($missing)->assertNotFound();
+    $this->json('HEAD', $missing)->assertNotFound();
+})->with(['wallets', 'incomes', 'expenses', 'transfers'])->with(['guest', 'user', 'admin']);
+
+test('user profile still requires login', function () {
+    $this->getJson('/api/user')->assertUnauthorized();
+    $user = User::factory()->create();
+    $this->actingAs($user)->getJson('/api/user')->assertOk()->assertJsonPath('id', $user->getKey());
+});
 
 test('transaction CRUD keeps exact balances and date format', function (string $kind) {
     $this->actingAs($this->admin);
@@ -183,7 +224,7 @@ test('category uuid and dates are validated', function () {
     $this->actingAs($this->admin);
     $wallet = financeWallet();
     $payload = financePayload('incomes', $wallet);
-    foreach ([['category' => null], ['category' => str_repeat('a', 101)], ['wallet_id' => 'bad'], ['wallet_id' => (string) Str::uuid()], ['transaction_date' => '31-02-2026 10:30']] as $invalid) {
+    foreach ([['wallet_id' => 'bad'], ['wallet_id' => (string) Str::uuid()], ['transaction_date' => '31-02-2026 10:30']] as $invalid) {
         $this->postJson('/api/incomes', [...$payload, ...$invalid])->assertUnprocessable();
     }
 });
