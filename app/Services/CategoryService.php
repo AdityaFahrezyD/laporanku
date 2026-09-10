@@ -14,7 +14,13 @@ class CategoryService
 {
     public function getCategories(?string $type = null): Collection
     {
-        return Category::when($type !== null, fn ($query) => $query->where('type', $type))->orderBy('name')->orderBy('category_id')->get();
+        return Category::when(
+            $type !== null,
+            fn($query) => $query->where("type", $type)
+        )
+            ->orderBy("name")
+            ->orderBy("category_id")
+            ->get();
     }
 
     public function getCategoryById(string $id): Category
@@ -36,21 +42,40 @@ class CategoryService
     {
         try {
             return DB::transaction(function () use ($id, $data) {
-                $category = $id === null ? new Category : Category::lockForUpdate()->findOrFail($id);
+                $category =
+                    $id === null
+                        ? new Category()
+                        : Category::lockForUpdate()->findOrFail($id);
                 $merged = array_replace($category->getAttributes(), $data);
                 Validator::make($merged, [
-                    'name' => ['required', 'string', 'max:100', Rule::unique('categories', 'name')->where('type', $merged['type'] ?? null)->ignore($category->getKey(), 'category_id')],
-                    'type' => ['required', 'in:income,expense'],
+                    "name" => [
+                        "required",
+                        "string",
+                        "max:100",
+                        Rule::unique("categories", "name")
+                            ->where("type", $merged["type"] ?? null)
+                            ->ignore($category->getKey(), "category_id"),
+                    ],
+                    "type" => ["required", "in:income,expense"],
                 ])->validate();
-                if ($category->exists && $category->type !== $merged['type'] && $this->isUsed($category)) {
-                    throw ValidationException::withMessages(['type' => 'Jenis kategori yang sudah digunakan tidak dapat diubah.']);
+                if (
+                    $category->exists &&
+                    $category->type !== $merged["type"] &&
+                    $this->isUsed($category)
+                ) {
+                    throw ValidationException::withMessages([
+                        "type" =>
+                            "Jenis kategori yang sudah digunakan tidak dapat diubah.",
+                    ]);
                 }
                 $category->fill($data)->save();
 
                 return $category->refresh();
             }, 3);
         } catch (UniqueConstraintViolationException) {
-            throw ValidationException::withMessages(['name' => 'Nama kategori sudah digunakan untuk jenis ini.']);
+            throw ValidationException::withMessages([
+                "name" => "Nama kategori sudah digunakan untuk jenis ini.",
+            ]);
         }
     }
 
@@ -59,7 +84,10 @@ class CategoryService
         DB::transaction(function () use ($id) {
             $category = Category::lockForUpdate()->findOrFail($id);
             if ($this->isUsed($category)) {
-                throw ValidationException::withMessages(['category_id' => 'Kategori yang sudah digunakan tidak dapat dihapus.']);
+                throw ValidationException::withMessages([
+                    "category_id" =>
+                        "Kategori yang sudah digunakan tidak dapat dihapus.",
+                ]);
             }
             $category->delete();
         }, 3);
@@ -67,6 +95,7 @@ class CategoryService
 
     private function isUsed(Category $category): bool
     {
-        return $category->incomes()->exists() || $category->expenses()->exists();
+        return $category->incomes()->exists() ||
+            $category->expenses()->exists();
     }
 }

@@ -9,7 +9,7 @@ class ExpenseService extends TransactionService
 {
     protected string $model = Expense::class;
 
-    protected array $relations = ['expenseWallet', 'category'];
+    protected array $relations = ['expenseWallet', 'category', 'attachments'];
 
     protected string $attachments = 'expenseAttachments';
 

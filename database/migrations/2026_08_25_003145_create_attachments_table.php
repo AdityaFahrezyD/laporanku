@@ -15,6 +15,11 @@ return new class extends Migration
             $table->uuid('attachment_id')->primary();
             $table->uuidMorphs('attachable');
             $table->string('file_path');
+            $table->string('disk')->nullable();
+            $table->string('mime_type')->nullable();
+            $table->unsignedBigInteger('size')->nullable();
+            $table->unsignedInteger('width')->nullable();
+            $table->unsignedInteger('height')->nullable();
             $table->timestamps();
         });
     }

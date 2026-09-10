@@ -9,7 +9,7 @@ class IncomeService extends TransactionService
 {
     protected string $model = Income::class;
 
-    protected array $relations = ['incomeWallet', 'category'];
+    protected array $relations = ['incomeWallet', 'category', 'attachments'];
 
     protected string $attachments = 'incomeAttachments';
 

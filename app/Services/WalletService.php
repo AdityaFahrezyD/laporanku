@@ -12,7 +12,11 @@ class WalletService
 {
     public function getWallets(): Collection
     {
-        return Wallet::orderByRaw("CASE type WHEN 'bank' THEN 1 WHEN 'ewallet' THEN 2 ELSE 3 END")->orderBy('name')->get();
+        return Wallet::orderByRaw(
+            "CASE type WHEN 'bank' THEN 1 WHEN 'ewallet' THEN 2 ELSE 3 END"
+        )
+            ->orderBy("name")
+            ->get();
     }
 
     public function getWalletById(string $id): Wallet
@@ -22,15 +26,19 @@ class WalletService
 
     public function createWallet(array $data): Wallet
     {
-        $data['balance'] = Money::decimal(Money::cents($data['balance'], 'balance', true));
+        $data["balance"] = Money::decimal(
+            Money::cents($data["balance"], "balance", true)
+        );
 
         return Wallet::create($data);
     }
 
     public function updateWallet(string $id, array $data): Wallet
     {
-        if (array_key_exists('balance', $data)) {
-            throw ValidationException::withMessages(['balance' => 'Saldo hanya dapat diubah melalui transaksi.']);
+        if (array_key_exists("balance", $data)) {
+            throw ValidationException::withMessages([
+                "balance" => "Saldo hanya dapat diubah melalui transaksi.",
+            ]);
         }
 
         return DB::transaction(function () use ($id, $data) {
@@ -44,6 +52,6 @@ class WalletService
     public function deleteWallet(string $id): void
     {
         $this->getWalletById($id);
-        abort(403, 'Wallet ini bersifat permanen dan tidak dapat dihapus');
+        abort(403, "Wallet ini bersifat permanen dan tidak dapat dihapus");
     }
 }

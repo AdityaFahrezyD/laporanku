@@ -9,7 +9,7 @@ class TransferService extends TransactionService
 {
     protected string $model = Transfer::class;
 
-    protected array $relations = ['transferFrom', 'transferTo'];
+    protected array $relations = ['transferFrom', 'transferTo', 'attachments'];
 
     protected string $attachments = 'transferAttachments';
 

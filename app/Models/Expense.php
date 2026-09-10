@@ -39,4 +39,9 @@ class Expense extends Model
     {
         return $this->morphMany(Attachment::class, 'attachable');
     }
+
+    public function attachments(): MorphMany
+    {
+        return $this->expenseAttachments();
+    }
 }
