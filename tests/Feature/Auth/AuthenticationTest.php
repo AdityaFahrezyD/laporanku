@@ -2,8 +2,8 @@
 
 use App\Models\User;
 
-test('users can authenticate using the login screen', function () {
-    $user = User::factory()->create();
+test('admins can authenticate using the login screen', function () {
+    $user = User::factory()->create(['role' => 'admin']);
 
     $response = $this->post('/login', [
         'email' => $user->email,

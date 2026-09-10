@@ -7,6 +7,15 @@ use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\VerifyEmailController;
 use Illuminate\Support\Facades\Route;
 
+// Keep cookie-based API authentication on the web session and CSRF middleware.
+Route::post('/api/login', [AuthenticatedSessionController::class, 'store'])
+    ->middleware(['guest', 'throttle:login'])
+    ->name('api.login');
+
+Route::post('/api/logout', [AuthenticatedSessionController::class, 'destroy'])
+    ->middleware('auth')
+    ->name('api.logout');
+
 Route::post('/login', [AuthenticatedSessionController::class, 'store'])
     ->middleware(['guest', 'throttle:login'])
     ->name('login');
