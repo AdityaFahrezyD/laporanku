@@ -10,7 +10,7 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         DB::transaction(function () {
-            $this->call([AdminSeeder::class, DemoDataSeeder::class]);
+            $this->call([AdminSeeder::class]);
         });
     }
 }
