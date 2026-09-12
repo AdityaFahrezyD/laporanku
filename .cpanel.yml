@@ -3,3 +3,5 @@ deployment:
   tasks:
     - export DEPLOYPATH=/home/knjsnjuv/laporanku.my.id/
     - /bin/cp -R public/. $DEPLOYPATH
+    - /bin/sed -i "s#require __DIR__.'/../vendor/autoload.php';#require '/home/knjsnjuv/repositories/laporanku_backend/vendor/autoload.php';#" $DEPLOYPATH/index.php
+    - /bin/sed -i "s#require_once __DIR__.'/../bootstrap/app.php';#require_once '/home/knjsnjuv/repositories/laporanku_backend/bootstrap/app.php';#" $DEPLOYPATH/index.php
