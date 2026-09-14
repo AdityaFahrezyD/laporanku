@@ -5,14 +5,20 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StoreIncomeRequest;
 use App\Http\Requests\UpdateIncomeRequest;
 use App\Services\IncomeService;
+use App\Services\TransactionQuery;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class IncomeController extends Controller
 {
     public function __construct(private readonly IncomeService $service) {}
 
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        if ($request->has('paginated')) {
+            return response()->json(app(TransactionQuery::class)->page('incomes', $request));
+        }
+
         return response()->json(['message' => 'Data income berhasil diambil', 'data' => $this->service->getIncomes()]);
     }
 

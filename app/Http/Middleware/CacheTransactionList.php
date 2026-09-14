@@ -12,23 +12,25 @@ class CacheTransactionList
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $ttl = config("traffic.transaction_cache_ttl");
-        if ($ttl <= 0 || !$request->isMethod("GET")) {
+        $ttl = config('traffic.transaction_cache_ttl');
+        if ($ttl <= 0 || ! $request->isMethod('GET')) {
             return $next($request);
         }
 
-        $user = $request->user("sanctum");
-        $scope = $user ? [$user->getAuthIdentifier(), $user->role] : ["guest"];
+        $user = $request->user('sanctum');
+        $scope = $user ? [$user->getAuthIdentifier(), $user->role] : ['guest'];
+        $parameters = $request->query();
+        ksort($parameters);
         $key =
-            "transaction-lists:" .
-            TransactionCache::version() .
-            ":" .
+            'transaction-lists:v2:'.
+            TransactionCache::version().
+            ':'.
             hash(
-                "sha256",
+                'sha256',
                 json_encode([
                     $scope,
                     $request->route()->getName(),
-                    $request->query(),
+                    $parameters,
                 ])
             );
 
@@ -36,15 +38,15 @@ class CacheTransactionList
         $cached = Cache::get($key);
         if (is_string($cached)) {
             return response($cached, 200, [
-                "Content-Type" => "application/json",
-                "Cache-Control" => "no-store, private",
+                'Content-Type' => 'application/json',
+                'Cache-Control' => 'no-store, private',
             ]);
         }
 
         $response = $next($request);
         if ($response->getStatusCode() === 200) {
             Cache::put($key, $response->getContent(), $ttl);
-            $response->headers->set("Cache-Control", "no-store, private");
+            $response->headers->set('Cache-Control', 'no-store, private');
         }
 
         return $response;

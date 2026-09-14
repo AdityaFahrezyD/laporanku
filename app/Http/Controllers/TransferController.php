@@ -4,15 +4,21 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreTransferRequest;
 use App\Http\Requests\UpdateTransferRequest;
+use App\Services\TransactionQuery;
 use App\Services\TransferService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class TransferController extends Controller
 {
     public function __construct(private readonly TransferService $service) {}
 
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        if ($request->has('paginated')) {
+            return response()->json(app(TransactionQuery::class)->page('transfers', $request));
+        }
+
         return response()->json(['message' => 'Data transfer berhasil diambil', 'data' => $this->service->getTransfers()]);
     }
 
