@@ -5,25 +5,31 @@ namespace App\Services;
 use App\Models\Expense;
 use App\Models\Income;
 use App\Models\Transfer;
-use App\Models\Wallet;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class TransactionQuery
 {
     private const MODELS = ['incomes' => Income::class, 'expenses' => Expense::class, 'transfers' => Transfer::class];
 
+    private const PRIMARY_KEYS = ['incomes' => 'income_id', 'expenses' => 'expense_id', 'transfers' => 'transfer_id'];
+
     private const RELATIONS = ['incomes' => ['incomeWallet', 'category', 'attachments'], 'expenses' => ['expenseWallet', 'category', 'attachments'], 'transfers' => ['transferFrom', 'transferTo', 'attachments']];
 
-    private function base(string $resource)
+    // Nama tabel/kolom hanya berasal dari daftar tetap, bukan input SQL pengguna.
+    private function table(string $resource): string
     {
-        return self::MODELS[$resource]::query();
+        abort_unless(isset(self::MODELS[$resource]), 404);
+
+        return $resource;
     }
 
-    // MySQL DECIMAL sums stay decimal strings; SQLite test sums may be numeric.
     private function decimal(mixed $value): string
     {
+        // MySQL mengembalikan SUM(DECIMAL) sebagai string; SQLite tes bisa float.
         if (is_float($value)) {
             return number_format($value, 2, '.', '');
         }
@@ -32,59 +38,152 @@ class TransactionQuery
         return $whole.'.'.str_pad(substr($fraction, 0, 2), 2, '0');
     }
 
+    private function records(string $resource, array $rows): Collection
+    {
+        // Model mempertahankan format nominal/tanggal dan relasi respons API.
+        return self::MODELS[$resource]::hydrate($rows)->load(self::RELATIONS[$resource]);
+    }
+
     public function page(string $resource, Request $request): array
     {
+        $table = $this->table($resource);
+        $primaryKey = self::PRIMARY_KEYS[$resource];
         $input = $request->validate([
             'paginated' => 'required|in:1',
             'start_date' => 'required_with:end_date|date_format:Y-m-d',
             'end_date' => 'required_with:start_date|date_format:Y-m-d|after_or_equal:start_date',
             'q' => 'nullable|string|max:200',
+            'category_id' => $resource === 'transfers' ? 'prohibited' : 'nullable|uuid',
             'page' => 'sometimes|integer|min:1',
             'per_page' => 'sometimes|integer|min:1|max:100',
         ]);
-        $query = $this->base($resource);
+        $currentPage = (int) ($input['page'] ?? 1);
+        $perPage = (int) ($input['per_page'] ?? 10);
+        $conditions = [];
+        $bindings = [];
+        $joins = '';
+
+        if (isset($input['category_id'])) {
+            $categoryId = strtolower($input['category_id']);
+            $category = DB::selectOne(<<<'SQL'
+                SELECT category_id
+                FROM categories
+                WHERE category_id = ? AND type = ?
+                LIMIT 1
+                SQL, [$categoryId, rtrim($resource, 's')]);
+            if (! $category) {
+                throw ValidationException::withMessages([
+                    'category_id' => 'Pilih kategori yang tersedia dan sesuai jenis transaksi.',
+                ]);
+            }
+            // Klausa ini dipakai oleh query total dan query halaman sekaligus.
+            $conditions[] = 't.category_id = ?';
+            $bindings[] = $categoryId;
+        }
+
         if (isset($input['start_date'])) {
             $start = CarbonImmutable::createFromFormat('!Y-m-d', $input['start_date'], 'Asia/Jakarta');
             $end = CarbonImmutable::createFromFormat('!Y-m-d', $input['end_date'], 'Asia/Jakarta')->addDay();
-            $query->where('transaction_date', '>=', $start->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s'))
-                ->where('transaction_date', '<', $end->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s'));
+            $conditions[] = 't.transaction_date >= ? AND t.transaction_date < ?';
+            $bindings[] = $start->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s');
+            $bindings[] = $end->setTimezone(config('app.timezone'))->format('Y-m-d H:i:s');
         }
+
         $search = $input['q'] ?? '';
         if ($search !== '') {
+            // %, _, dan ! dicari sebagai teks literal, bukan wildcard pengguna.
             $pattern = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($search)).'%';
-            $query->where(function ($q) use ($pattern, $resource) {
-                $q->whereRaw("LOWER(description) LIKE ? ESCAPE '!'", [$pattern])
-                    ->orWhereRaw("CAST(amount AS CHAR) LIKE ? ESCAPE '!'", [$pattern]);
-                foreach (array_diff(self::RELATIONS[$resource], ['attachments']) as $relation) {
-                    $q->orWhereHas($relation, fn ($related) => $related->whereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$pattern]));
-                }
-            });
+            if ($resource === 'transfers') {
+                $joins = <<<'SQL'
+                    LEFT JOIN wallets AS source_wallet ON source_wallet.wallet_id = t.from_wallet_id
+                    LEFT JOIN wallets AS target_wallet ON target_wallet.wallet_id = t.to_wallet_id
+                    SQL;
+                $conditions[] = <<<'SQL'
+                    (
+                        LOWER(t.description) LIKE ? ESCAPE '!'
+                        OR CAST(t.amount AS CHAR) LIKE ? ESCAPE '!'
+                        OR LOWER(source_wallet.name) LIKE ? ESCAPE '!'
+                        OR LOWER(target_wallet.name) LIKE ? ESCAPE '!'
+                    )
+                    SQL;
+            } else {
+                $joins = <<<'SQL'
+                    LEFT JOIN wallets AS wallet ON wallet.wallet_id = t.wallet_id
+                    LEFT JOIN categories AS category ON category.category_id = t.category_id
+                    SQL;
+                $conditions[] = <<<'SQL'
+                    (
+                        LOWER(t.description) LIKE ? ESCAPE '!'
+                        OR CAST(t.amount AS CHAR) LIKE ? ESCAPE '!'
+                        OR LOWER(wallet.name) LIKE ? ESCAPE '!'
+                        OR LOWER(category.name) LIKE ? ESCAPE '!'
+                    )
+                    SQL;
+            }
+            array_push($bindings, $pattern, $pattern, $pattern, $pattern);
         }
+        $where = $conditions ? 'WHERE '.implode(' AND ', $conditions) : '';
 
-        return DB::transaction(function () use ($query, $resource, $input) {
-            $total = $this->decimal((clone $query)->sum('amount'));
-            $page = $query->with(self::RELATIONS[$resource])->orderByDesc('transaction_date')
-                ->orderBy($query->getModel()->getKeyName())
-                ->paginate($input['per_page'] ?? 10, ['*'], 'page', $input['page'] ?? 1);
+        return DB::transaction(function () use ($table, $resource, $primaryKey, $joins, $where, $bindings, $currentPage, $perPage) {
+            // Hitung seluruh hasil filter. Total tidak dibatasi LIMIT halaman.
+            $aggregate = DB::selectOne(<<<SQL
+                SELECT COUNT(*) AS total, COALESCE(SUM(t.amount), 0) AS total_amount
+                FROM {$table} AS t
+                {$joins}
+                {$where}
+                SQL, $bindings);
+            $total = (int) $aggregate->total;
+            $lastPage = max(1, (int) ceil($total / $perPage));
+            $rows = [];
 
-            return ['data' => $page->items(), 'meta' => [
-                'current_page' => $page->currentPage(), 'last_page' => $page->lastPage(),
-                'per_page' => $page->perPage(), 'total' => $page->total(),
-            ], 'summary' => ['total_amount' => $total]];
+            if ($total > 0 && $currentPage <= $lastPage) {
+                $offset = ($currentPage - 1) * $perPage;
+                $rows = DB::select(<<<SQL
+                    SELECT t.*
+                    FROM {$table} AS t
+                    {$joins}
+                    {$where}
+                    ORDER BY t.transaction_date DESC, t.{$primaryKey} ASC
+                    LIMIT ? OFFSET ?
+                    SQL, [...$bindings, $perPage, $offset]);
+            }
+
+            return ['data' => $this->records($resource, $rows)->all(), 'meta' => [
+                'current_page' => $currentPage, 'last_page' => $lastPage,
+                'per_page' => $perPage, 'total' => $total,
+            ], 'summary' => ['total_amount' => $this->decimal($aggregate->total_amount)]];
         });
     }
 
     public function summary(): array
     {
         return DB::transaction(function () {
-            $latest = collect();
-            $totals = ['balance' => $this->decimal(Wallet::sum('balance'))];
+            $balance = DB::selectOne(<<<'SQL'
+                SELECT COALESCE(SUM(balance), 0) AS total_balance
+                FROM wallets
+                SQL);
+            $totals = ['balance' => $this->decimal($balance->total_balance)];
             $counts = [];
-            foreach (self::MODELS as $resource => $model) {
-                $totals[$resource] = $this->decimal($model::sum('amount'));
-                $counts[$resource] = $model::count();
-                $query = $this->base($resource);
-                foreach ($query->with(self::RELATIONS[$resource])->orderByDesc('transaction_date')->orderBy($query->getModel()->getKeyName())->limit(5)->get() as $row) {
+            $latest = collect();
+
+            foreach (array_keys(self::MODELS) as $resource) {
+                $table = $this->table($resource);
+                $primaryKey = self::PRIMARY_KEYS[$resource];
+                $aggregate = DB::selectOne(<<<SQL
+                    SELECT COUNT(*) AS total, COALESCE(SUM(amount), 0) AS total_amount
+                    FROM {$table}
+                    SQL);
+                $totals[$resource] = $this->decimal($aggregate->total_amount);
+                $counts[$resource] = (int) $aggregate->total;
+
+                // Ambil paling banyak lima kandidat dari setiap jenis transaksi.
+                $rows = DB::select(<<<SQL
+                    SELECT *
+                    FROM {$table}
+                    ORDER BY transaction_date DESC, {$primaryKey} ASC
+                    LIMIT 5
+                    SQL);
+                foreach ($this->records($resource, $rows) as $row) {
                     $latest->push([...$row->toArray(), 'id' => $row->getKey(), 'type' => rtrim($resource, 's')]);
                 }
             }

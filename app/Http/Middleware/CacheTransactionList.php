@@ -22,7 +22,7 @@ class CacheTransactionList
         $parameters = $request->query();
         ksort($parameters);
         $key =
-            'transaction-lists:v2:'.
+            'transaction-lists:v3:'.
             TransactionCache::version().
             ':'.
             hash(

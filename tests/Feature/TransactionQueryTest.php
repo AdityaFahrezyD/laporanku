@@ -1,11 +1,14 @@
 <?php
 
+use App\Models\Category;
 use App\Models\Expense;
 use App\Models\Income;
 use App\Models\Transfer;
 use App\Models\Wallet;
 use App\Support\TransactionCache;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 function queryFixture(string $resource, string $date = '2026-09-14 00:00:00', string $description = 'Gaji', string $amount = '10.01')
 {
@@ -83,7 +86,7 @@ test('cache distinguishes queries and refreshes summary after invalidation', fun
 });
 
 test('category and destination wallet names are searchable', function () {
-    $category = \App\Models\Category::create(['name' => 'Salary Special', 'type' => 'income']);
+    $category = Category::create(['name' => 'Salary Special', 'type' => 'income']);
     $income = queryFixture('incomes');
     $income->update(['category_id' => $category->getKey()]);
     $destination = Wallet::create(['name' => 'Destination Unique', 'type' => 'cash', 'balance' => '0.00', 'is_active' => true]);
@@ -101,12 +104,76 @@ test('date index migration can roll back and preserves an existing covering inde
     $migration = require database_path('migrations/2026_09_14_120000_index_transaction_dates.php');
     $migration->down();
     foreach (['incomes', 'expenses', 'transfers'] as $table) {
-        expect(\Illuminate\Support\Facades\Schema::hasIndex($table, $table.'_transaction_date_query_idx'))->toBeFalse();
+        expect(Schema::hasIndex($table, $table.'_transaction_date_query_idx'))->toBeFalse();
     }
-    \Illuminate\Support\Facades\Schema::table('incomes', fn ($table) => $table->index(['transaction_date', 'income_id'], 'existing_date_index'));
+    Schema::table('incomes', fn ($table) => $table->index(['transaction_date', 'income_id'], 'existing_date_index'));
     $migration->up();
-    expect(\Illuminate\Support\Facades\Schema::hasIndex('incomes', 'incomes_transaction_date_query_idx'))->toBeFalse();
-    expect(\Illuminate\Support\Facades\Schema::hasIndex('expenses', 'expenses_transaction_date_query_idx'))->toBeTrue();
+    expect(Schema::hasIndex('incomes', 'incomes_transaction_date_query_idx'))->toBeFalse();
+    expect(Schema::hasIndex('expenses', 'expenses_transaction_date_query_idx'))->toBeTrue();
     $migration->down();
-    expect(\Illuminate\Support\Facades\Schema::hasIndex('incomes', 'existing_date_index'))->toBeTrue();
+    expect(Schema::hasIndex('incomes', 'existing_date_index'))->toBeTrue();
+});
+
+test('SQL search binds quotes and does not interpret input as a SQL condition', function ($resource) {
+    queryFixture($resource, description: "Catatan O'Brien");
+    queryFixture($resource, description: 'Lainnya');
+    $this->getJson('/api/'.$resource.'?paginated=1&q='.urlencode("O'Brien"))
+        ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('summary.total_amount', '10.01');
+    $this->getJson('/api/'.$resource.'?paginated=1&q='.urlencode("' OR 1=1 --"))
+        ->assertOk()->assertJsonCount(0, 'data')->assertJsonPath('summary.total_amount', '0.00');
+})->with(['incomes', 'expenses', 'transfers']);
+
+test('raw SQL records retain the detail response format and attachments', function ($resource) {
+    $record = queryFixture($resource);
+    $record->attachments()->create(['file_path' => 'receipt.avif', 'mime_type' => 'image/avif']);
+    $detail = $this->getJson('/api/'.$resource.'/'.$record->getKey())->assertOk()->json('data');
+    $page = $this->getJson('/api/'.$resource.'?paginated=1')->assertOk()->assertJsonCount(1, 'data.0.attachments');
+    expect($page->json('data.0'))->toEqual($detail);
+    $this->getJson('/api/'.$resource.'?paginated=1&page='.PHP_INT_MAX)
+        ->assertOk()->assertJsonCount(0, 'data')->assertJsonPath('summary.total_amount', '10.01');
+})->with(['incomes', 'expenses', 'transfers']);
+
+test('category combines with period and search while totals include every matching page', function ($resource) {
+    $type = rtrim($resource, 's');
+    $a = Category::create(['name' => 'Kategori A', 'type' => $type]);
+    $b = Category::create(['name' => 'Kategori B', 'type' => $type]);
+    for ($i = 0; $i < 12; $i++) {
+        queryFixture($resource, description: 'Match '.$i)->update(['category_id' => $a->getKey()]);
+    }
+    queryFixture($resource, '2026-08-10 10:00:00', 'Match lama', '100.00')->update(['category_id' => $a->getKey()]);
+    queryFixture($resource, description: 'Match kategori lain', amount: '7.25')->update(['category_id' => $b->getKey()]);
+    queryFixture($resource, description: 'Tanpa kategori', amount: '3.50');
+    $url = '/api/'.$resource.'?paginated=1&category_id='.$a->getKey().'&start_date=2026-09-01&end_date=2026-09-30&q=match';
+    $this->getJson($url)->assertOk()->assertJsonCount(10, 'data')->assertJsonPath('meta.total', 12)->assertJsonPath('summary.total_amount', '120.12');
+    $this->getJson($url.'&page=2')->assertOk()->assertJsonCount(2, 'data')->assertJsonPath('summary.total_amount', '120.12');
+    $this->getJson('/api/'.$resource.'?paginated=1&category_id='.$b->getKey())->assertJsonCount(1, 'data')->assertJsonPath('summary.total_amount', '7.25');
+    $this->getJson('/api/'.$resource.'?paginated=1&category_id=')->assertJsonPath('meta.total', 15)->assertJsonPath('summary.total_amount', '230.87');
+    $empty = Category::create(['name' => 'Belum dipakai', 'type' => $type]);
+    $this->getJson('/api/'.$resource.'?paginated=1&category_id='.$empty->getKey())->assertJsonCount(0, 'data')->assertJsonPath('summary.total_amount', '0.00');
+})->with(['incomes', 'expenses']);
+
+test('category filter rejects missing or wrong-type categories and transfers', function () {
+    $income = Category::create(['name' => 'Income', 'type' => 'income']);
+    $expense = Category::create(['name' => 'Expense', 'type' => 'expense']);
+    foreach (['incomes' => $expense->getKey(), 'expenses' => $income->getKey(), 'transfers' => $income->getKey()] as $resource => $id) {
+        $this->getJson('/api/'.$resource.'?paginated=1&category_id='.$id)->assertUnprocessable()->assertJsonValidationErrors('category_id');
+    }
+    foreach ([(string) Str::uuid(), "' OR 1=1 --", 'not-a-uuid'] as $id) {
+        $this->getJson('/api/incomes?paginated=1&category_id='.urlencode($id))->assertUnprocessable()->assertJsonValidationErrors('category_id');
+    }
+});
+
+test('category-specific cache entries refresh after transaction category changes', function () {
+    config(['traffic.transaction_cache_ttl' => 60]);
+    $a = Category::create(['name' => 'A', 'type' => 'income']);
+    $b = Category::create(['name' => 'B', 'type' => 'income']);
+    $record = queryFixture('incomes');
+    $record->update(['category_id' => $a->getKey()]);
+    $url = '/api/incomes?paginated=1&category_id=';
+    $this->getJson($url.$a->getKey())->assertJsonCount(1, 'data');
+    $this->getJson($url.$b->getKey())->assertJsonCount(0, 'data');
+    $record->update(['category_id' => $b->getKey()]);
+    TransactionCache::invalidate(); // Simulate the outer RefreshDatabase transaction committing.
+    $this->getJson($url.$a->getKey())->assertJsonCount(0, 'data');
+    $this->getJson($url.$b->getKey())->assertJsonCount(1, 'data');
 });
