@@ -10,15 +10,14 @@ class AvifProcessor
 {
     public function process(UploadedFile $file): array
     {
-        $invalid = fn() => throw ValidationException::withMessages([
-            "image" =>
-                "Gambar harus JPEG, PNG, WebP, atau AVIF statis yang valid dan tidak melebihi batas piksel.",
+        $invalid = fn(string $message) => throw ValidationException::withMessages([
+            "image" => $message,
         ]);
-        if (
-            !$file->isValid() ||
-            $file->getSize() > config("attachments.max_kb") * 1024
-        ) {
-            $invalid();
+        if (!$file->isValid()) {
+            $invalid("Unggahan gambar tidak selesai. Silakan unggah kembali.");
+        }
+        if ($file->getSize() > config("attachments.max_kb") * 1024) {
+            $invalid("Ukuran gambar maksimal " . config("attachments.max_kb") . " KB.");
         }
         $info = @getimagesize($file->getPathname());
         if (
@@ -29,14 +28,17 @@ class AvifProcessor
                 true
             ) ||
             $info[0] < 1 ||
-            $info[1] < 1 ||
-            config("attachments.max_pixels") < $info[0] * $info[1]
+            $info[1] < 1
         ) {
-            $invalid();
+            $invalid("Format gambar tidak valid. Gunakan JPEG, PNG, WebP, atau AVIF.");
+        }
+        if (config("attachments.max_pixels") < $info[0] * $info[1]) {
+            $limit = number_format(config("attachments.max_pixels"), 0, ",", ".");
+            $invalid("Resolusi gambar {$info[0]} x {$info[1]} melebihi batas {$limit} piksel. Perkecil resolusi gambar sebelum mengunggah.");
         }
         $bytes = file_get_contents($file->getPathname());
         if ($this->animated($bytes, $info["mime"])) {
-            $invalid();
+            $invalid("Gambar animasi tidak didukung. Gunakan gambar statis.");
         }
         if (
             !function_exists("imageavif") ||
@@ -47,7 +49,7 @@ class AvifProcessor
         $image = @imagecreatefromstring($bytes);
         unset($bytes);
         if (!$image) {
-            $invalid();
+            $invalid("Gambar tidak dapat dibaca oleh server. Ekspor ulang sebagai JPEG atau PNG, lalu unggah kembali.");
         }
         if ($info["mime"] === "image/jpeg") {
             if (!function_exists("exif_read_data")) {

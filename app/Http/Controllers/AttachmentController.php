@@ -43,6 +43,9 @@ class AttachmentController extends Controller
                 "file",
                 "max:" . config("attachments.max_kb"),
             ],
+        ], [
+            "image.uploaded" => "Unggahan gambar gagal diterima server. Periksa batas upload_max_filesize PHP atau unggah gambar yang lebih kecil.",
+            "image.max" => "Ukuran gambar maksimal :max KB.",
         ]);
         $ticket = null;
         try {

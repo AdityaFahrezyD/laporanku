@@ -73,6 +73,7 @@ test('deleting a transaction deletes its files after commit', function (string $
 })->with(['incomes', 'expenses', 'transfers']);
 
 test('invalid oversized and animated images are rejected without storing files', function () {
+    config(['attachments.max_kb' => 5120, 'attachments.max_pixels' => 4000000]);
     $base = attachmentTransaction($this, 'incomes');
     $png = UploadedFile::fake()->image('image.png', 8, 8);
     $bytes = file_get_contents($png->getPathname());
@@ -87,6 +88,52 @@ test('invalid oversized and animated images are rejected without storing files',
         $this->postJson($base.'/attachments', ['image' => $file])->assertUnprocessable()->assertJsonValidationErrors('image');
     }
     $this->assertDatabaseCount('attachments', 0);
+    expect(Storage::disk('attachments')->allFiles())->toBe([]);
+});
+
+test('a JPEG over two megabytes and four megapixels uploads and is resized', function () {
+    config(['attachments.max_kb' => 7120, 'attachments.max_pixels' => 20000000]);
+    $base = attachmentTransaction($this, 'incomes');
+    $tile = imagecreatetruecolor(256, 256);
+    for ($y = 0; $y < 256; $y++) {
+        for ($x = 0; $x < 256; $x++) {
+            imagesetpixel($tile, $x, $y,
+                (($x * 17 + $y * 3) % 256 << 16) |
+                (($x + $y * 11) % 256 << 8) |
+                ($x * 7 + $y) % 256);
+        }
+    }
+    $image = imagecreatetruecolor(4000, 3000);
+    imagesettile($image, $tile);
+    imagefilledrectangle($image, 0, 0, 3999, 2999, IMG_COLOR_TILED);
+    ob_start();
+    imagejpeg($image, null, 85);
+    $bytes = ob_get_clean();
+    unset($image, $tile);
+    expect(strlen($bytes))->toBeGreaterThan(2 * 1024 * 1024)
+        ->toBeLessThanOrEqual(7120 * 1024);
+
+    $this->postJson($base.'/attachments', [
+        'image' => UploadedFile::fake()->createWithContent('large-photo.jpg', $bytes),
+    ])->assertCreated()->assertJsonPath('data.mime_type', 'image/avif')
+        ->assertJsonPath('data.width', 1920)->assertJsonPath('data.height', 1440);
+});
+
+test('pixel rejection reports the active limit and the image dimensions', function () {
+    config(['attachments.max_pixels' => 100]);
+    $base = attachmentTransaction($this, 'incomes');
+    $this->postJson($base.'/attachments', ['image' => UploadedFile::fake()->image('photo.jpg', 20, 10)])
+        ->assertUnprocessable()->assertJsonPath('errors.image.0',
+            'Resolusi gambar 20 x 10 melebihi batas 100 piksel. Perkecil resolusi gambar sebelum mengunggah.');
+    expect(Storage::disk('attachments')->allFiles())->toBe([]);
+});
+
+test('PHP upload limit failures explain the server limit', function () {
+    $base = attachmentTransaction($this, 'incomes');
+    $file = new UploadedFile('', 'photo.jpg', 'image/jpeg', UPLOAD_ERR_INI_SIZE, true);
+    $this->postJson($base.'/attachments', ['image' => $file])
+        ->assertUnprocessable()->assertJsonPath('errors.image.0',
+            'Unggahan gambar gagal diterima server. Periksa batas upload_max_filesize PHP atau unggah gambar yang lebih kecil.');
     expect(Storage::disk('attachments')->allFiles())->toBe([]);
 });
 
