@@ -73,6 +73,9 @@ abstract class TransactionService
             if (array_key_exists("amount", $data)) {
                 $data["amount"] = Money::decimal(Money::cents($data["amount"]));
             }
+            if (array_key_exists("admin_fee", $data)) {
+                $data["admin_fee"] = Money::decimal(Money::cents($data["admin_fee"], "admin_fee", true));
+            }
             $record->fill($data)->save();
 
             return $record->refresh()->load($this->relations);
@@ -100,6 +103,12 @@ abstract class TransactionService
             }
         }
         $amount = Money::cents($data["amount"]);
+        $adminFee = Money::cents(array_key_exists("admin_fee", $data) ? $data["admin_fee"] : 0, "admin_fee", true);
+        if ($this->kind === "income" && $adminFee > $amount) {
+            throw ValidationException::withMessages([
+                "admin_fee" => "Biaya admin tidak boleh melebihi nominal pemasukan.",
+            ]);
+        }
         if ($this->kind === "transfer") {
             if ($data["from_wallet_id"] === $data["to_wallet_id"]) {
                 throw ValidationException::withMessages([
@@ -108,13 +117,13 @@ abstract class TransactionService
             }
 
             return [
-                $data["from_wallet_id"] => -$amount,
+                $data["from_wallet_id"] => -($amount + $adminFee),
                 $data["to_wallet_id"] => $amount,
             ];
         }
 
         return [
-            $data["wallet_id"] => $this->kind === "income" ? $amount : -$amount,
+            $data["wallet_id"] => ($this->kind === "income" ? $amount : -$amount) - $adminFee,
         ];
     }
 

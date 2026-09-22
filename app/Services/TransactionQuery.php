@@ -127,7 +127,8 @@ class TransactionQuery
         return DB::transaction(function () use ($table, $resource, $primaryKey, $joins, $where, $bindings, $currentPage, $perPage) {
             // Hitung seluruh hasil filter. Total tidak dibatasi LIMIT halaman.
             $aggregate = DB::selectOne(<<<SQL
-                SELECT COUNT(*) AS total, COALESCE(SUM(t.amount), 0) AS total_amount
+                SELECT COUNT(*) AS total, COALESCE(SUM(t.amount), 0) AS total_amount,
+                    COALESCE(SUM(t.admin_fee), 0) AS total_admin_fee
                 FROM {$table} AS t
                 {$joins}
                 {$where}
@@ -151,7 +152,10 @@ class TransactionQuery
             return ['data' => $this->records($resource, $rows)->all(), 'meta' => [
                 'current_page' => $currentPage, 'last_page' => $lastPage,
                 'per_page' => $perPage, 'total' => $total,
-            ], 'summary' => ['total_amount' => $this->decimal($aggregate->total_amount)]];
+            ], 'summary' => [
+                'total_amount' => $this->decimal($aggregate->total_amount),
+                'total_admin_fee' => $this->decimal($aggregate->total_admin_fee),
+            ]];
         });
     }
 
@@ -187,6 +191,21 @@ class TransactionQuery
                     $latest->push([...$row->toArray(), 'id' => $row->getKey(), 'type' => rtrim($resource, 's')]);
                 }
             }
+
+            // Aggregate in SQL to retain DECIMAL precision, including totals above a single transaction's limit.
+            $costs = DB::selectOne(<<<'SQL'
+                SELECT COALESCE(SUM(admin_fees), 0) AS admin_fees,
+                    COALESCE(SUM(expenses + admin_fees), 0) AS expenses
+                FROM (
+                    SELECT 0 AS expenses, COALESCE(SUM(admin_fee), 0) AS admin_fees FROM incomes
+                    UNION ALL
+                    SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(admin_fee), 0) FROM expenses
+                    UNION ALL
+                    SELECT 0, COALESCE(SUM(admin_fee), 0) FROM transfers
+                ) AS costs
+                SQL);
+            $totals['expenses'] = $this->decimal($costs->expenses);
+            $totals['admin_fees'] = $this->decimal($costs->admin_fees);
 
             return ['totals' => $totals, 'counts' => $counts, 'latest' => $latest->sort(function ($a, $b) {
                 return strcmp($b['transaction_date'], $a['transaction_date']) ?: strcmp($a['id'], $b['id']) ?: strcmp($a['type'], $b['type']);

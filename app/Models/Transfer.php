@@ -18,11 +18,11 @@ class Transfer extends Model
 
     public $incrementing = false;
 
-    protected $fillable = ['from_wallet_id', 'to_wallet_id', 'amount', 'description', 'transaction_date'];
+    protected $fillable = ['from_wallet_id', 'to_wallet_id', 'amount', 'admin_fee', 'description', 'transaction_date'];
 
     protected function casts(): array
     {
-        return ['amount' => 'decimal:2', 'transaction_date' => 'datetime'];
+        return ['amount' => 'decimal:2', 'admin_fee' => 'decimal:2', 'transaction_date' => 'datetime'];
     }
 
     public function transferFrom(): BelongsTo

@@ -26,6 +26,7 @@ class StoreTransferRequest extends FormRequest
             'from_wallet_id' => ['required', 'uuid', 'exists:wallets,wallet_id'],
             'to_wallet_id' => ['required', 'uuid', 'exists:wallets,wallet_id'],
             'amount' => ['required', 'numeric', 'gt:0', 'regex:/^\\d{1,13}(?:\\.\\d{1,2})?$/D'],
+            'admin_fee' => ['sometimes', 'required', 'numeric', 'gte:0', 'regex:/^\d{1,13}(?:\.\d{1,2})?$/D'],
             'description' => ['sometimes', 'nullable', 'string', 'max:255'],
             'transaction_date' => ['required', 'date_format:d-m-Y H:i'],
             'category' => ['missing'],

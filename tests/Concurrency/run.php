@@ -6,6 +6,7 @@ use App\Models\Wallet;
 use App\Services\CategoryService;
 use App\Services\ExpenseService;
 use App\Services\IncomeService;
+use App\Services\TransactionQuery;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\Artisan;
@@ -55,8 +56,8 @@ if ($worker) {
     }
     try {
         match ($argv[2]) {
-            'expense' => app(ExpenseService::class)->createExpense(['wallet_id' => $argv[3], 'amount' => '80.00', 'transaction_date' => '08-09-2026 10:30']),
-            'update' => app(IncomeService::class)->updateIncome($argv[3], ['amount' => '200.00']),
+            'expense' => app(ExpenseService::class)->createExpense(['wallet_id' => $argv[3], 'amount' => '80.00', 'admin_fee' => '0.01', 'transaction_date' => '08-09-2026 10:30']),
+            'update' => app(IncomeService::class)->updateIncome($argv[3], ['amount' => '200.00', 'admin_fee' => '20.00']),
             'delete' => app(IncomeService::class)->deleteIncome($argv[3]),
         };
         echo '200';
@@ -133,10 +134,10 @@ try {
         $results = race($database, [['expense', $wallet->getKey()], ['expense', $wallet->getKey()]]);
         sort($results);
         verify($results === ['200', '422'], 'Concurrent expenses did not reject overspending.');
-        verify($wallet->fresh()->balance === '20.00', 'Concurrent expense balance mismatch.');
+        verify($wallet->fresh()->balance === '19.99', 'Concurrent expense and fee balance mismatch.');
 
         $wallet->update(['balance' => '1000.00']);
-        $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '100.00', 'transaction_date' => '08-09-2026 10:30']);
+        $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '100.00', 'admin_fee' => '10.00', 'transaction_date' => '08-09-2026 10:30']);
         $results = race($database, [['update', $income->getKey()], ['delete', $income->getKey()]]);
         verify($results[1] === '200' && in_array($results[0], ['200', '404'], true), 'Concurrent edit/delete failed.');
         verify($wallet->fresh()->balance === '1000.00' && Income::find($income->getKey()) === null, 'Income reversed more than once.');
@@ -153,11 +154,26 @@ try {
     }
     app(IncomeService::class)->deleteIncome($income->getKey());
     verify($wallet->fresh()->balance === '0.00', 'Maximum reversal mismatch.');
+    $income = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '9999999999999.99', 'admin_fee' => '9999999999999.99', 'transaction_date' => '08-09-2026 10:30']);
+    verify($income->admin_fee === '9999999999999.99' && $wallet->fresh()->balance === '0.00', 'Maximum admin fee precision lost.');
+    app(IncomeService::class)->updateIncome($income->getKey(), ['admin_fee' => '9999999999999.98']);
+    verify($wallet->fresh()->balance === '0.01', 'One-cent fee edit lost precision.');
+    $second = app(IncomeService::class)->createIncome(['wallet_id' => $wallet->getKey(), 'amount' => '9999999999999.99', 'admin_fee' => '9999999999999.99', 'transaction_date' => '08-09-2026 10:30']);
+    $summary = app(TransactionQuery::class)->summary();
+    // The five successful expense races contributed another 0.05 in fees.
+    verify($summary['totals']['admin_fees'] === '20000000000000.02', 'Aggregate fee precision lost.');
+    verify($summary['totals']['expenses'] === '20000000000400.02', 'Aggregate expense precision lost.');
+    app(IncomeService::class)->deleteIncome($second->getKey());
+    app(IncomeService::class)->deleteIncome($income->getKey());
+    verify($wallet->fresh()->balance === '0.00', 'Fee reversal mismatch.');
     verify(Artisan::call('migrate:reset', ['--database' => 'finance_test', '--force' => true]) === 0, 'Migration rollback failed.');
     verify(Artisan::call('migrate', ['--database' => 'finance_test', '--force' => true]) === 0, 'Migration reapply failed.');
     verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('incomes', 'category_id'), 'Reapplied migration is missing category.');
     verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn('expenses', 'category_id'), 'Reapplied expense category is missing.');
-    echo "PASS: 5 overspending races, 5 edit/delete races, DECIMAL boundary, category master, full rollback/reapply.\n";
+    foreach (['incomes', 'expenses', 'transfers'] as $table) {
+        verify(DB::connection('finance_test')->getSchemaBuilder()->hasColumn($table, 'admin_fee'), 'Reapplied admin fee is missing.');
+    }
+    echo "PASS: 5 overspending races with fees, 5 edit/delete races with fees, DECIMAL and fee boundaries, fee aggregates, category master, full rollback/reapply.\n";
 } finally {
     DB::disconnect('finance_test');
     if ($created) {

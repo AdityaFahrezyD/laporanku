@@ -18,7 +18,7 @@ class Income extends Model
 
     public $incrementing = false;
 
-    protected $fillable = ['wallet_id', 'amount', 'category_id', 'description', 'transaction_date'];
+    protected $fillable = ['wallet_id', 'amount', 'admin_fee', 'category_id', 'description', 'transaction_date'];
 
     public function category(): BelongsTo
     {
@@ -27,7 +27,7 @@ class Income extends Model
 
     protected function casts(): array
     {
-        return ['amount' => 'decimal:2', 'transaction_date' => 'datetime'];
+        return ['amount' => 'decimal:2', 'admin_fee' => 'decimal:2', 'transaction_date' => 'datetime'];
     }
 
     public function incomeWallet(): BelongsTo
