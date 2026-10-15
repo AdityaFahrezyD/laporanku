@@ -35,7 +35,7 @@ Route::middleware(["auth:sanctum", "throttle:api-reads"])->get(
 );
 
 Route::middleware("throttle:api-reads")->group(function () {
-    Route::get('/dashboard-summary', fn (\App\Services\TransactionQuery $query) => response()->json(['data' => $query->summary()]))
+    Route::get('/dashboard-summary', fn(\App\Services\TransactionQuery $query) => response()->json(['data' => $query->summary()]))
         ->name('dashboard.summary')->middleware(CacheTransactionList::class);
     Route::apiResource("wallets", WalletController::class)->only([
         "index",
